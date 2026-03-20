@@ -24,12 +24,15 @@ for d in [DATA_DIR, DATA_DIR / "pdfs", OUTPUTS_DIR, RAW_OUTPUTS_DIR,
 
 # ── LLM Provider ─────────────────────────────────────────────────────────────
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")   # "openai" | "anthropic"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")   # "openai" | "anthropic" | "groq"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-6")
+# Best Groq model for structured JSON extraction:
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Max tokens for extraction response (large papers need headroom)
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "4096"))

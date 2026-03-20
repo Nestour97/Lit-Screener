@@ -63,40 +63,67 @@ with st.sidebar:
     st.title("⚙️ Settings")
 
     st.subheader("LLM Provider")
-    provider = st.selectbox("Provider", ["openai", "anthropic"], index=0)
+    provider = st.selectbox("Provider", ["groq", "openai", "anthropic"], index=0)
 
-    if provider == "openai":
+    if provider == "groq":
         api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            value=os.getenv("OPENAI_API_KEY", ""),
-            help="Get one at platform.openai.com",
+            "Groq API Key", type="password",
+            value=os.getenv("GROQ_API_KEY", ""),
+            help="Get a free key at console.groq.com",
         )
-        model = st.selectbox(
-            "Model",
-            ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
-            index=0,
-            help="gpt-4o = best balance. gpt-4o-mini = cheapest (classification only).",
-        )
-        os.environ["OPENAI_API_KEY"] = api_key
-        os.environ["OPENAI_MODEL"] = model
-    else:
+        model = st.selectbox("Model", [
+            "llama-3.3-70b-versatile", "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it",
+        ], help="llama-3.3-70b-versatile = best quality")
+        # Set immediately so pipeline picks up the live value
+        os.environ["GROQ_API_KEY"] = api_key
+        os.environ["GROQ_MODEL"] = model
+
+    elif provider == "anthropic":
         api_key = st.text_input(
-            "Anthropic API Key",
-            type="password",
+            "Anthropic API Key", type="password",
             value=os.getenv("ANTHROPIC_API_KEY", ""),
-            help="Get one at console.anthropic.com",
+            help="Get one at console.anthropic.com — starts with sk-ant-...",
         )
-        model = st.selectbox(
-            "Model",
-            ["claude-opus-4-6", "claude-sonnet-4-6"],
-            index=0,
-            help="Opus 4.6 = strongest for extraction. Sonnet 4.6 = faster & cheaper.",
-        )
+        model = st.selectbox("Model", [
+            "claude-opus-4-6", "claude-sonnet-4-6",
+        ], help="Opus 4.6 = best for extraction. Sonnet 4.6 = faster.")
         os.environ["ANTHROPIC_API_KEY"] = api_key
         os.environ["ANTHROPIC_MODEL"] = model
 
+    else:  # openai
+        api_key = st.text_input(
+            "OpenAI API Key", type="password",
+            value=os.getenv("OPENAI_API_KEY", ""),
+            help="Get one at platform.openai.com — starts with sk-...",
+        )
+        model = st.selectbox("Model", ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"])
+        os.environ["OPENAI_API_KEY"] = api_key
+        os.environ["OPENAI_MODEL"] = model
+
     os.environ["LLM_PROVIDER"] = provider
+
+    # Live key status indicator
+    if api_key and len(api_key) > 10:
+        st.success("✅ API key set")
+    elif api_key:
+        st.warning("⚠️ Key looks too short — double-check it")
+    else:
+        st.error("⛔ No API key — paste it above")
+
+    if st.button("🔌 Test connection", disabled=not api_key):
+        with st.spinner("Testing…"):
+            try:
+                from src.services.llm_client import LLMClient
+                test_client = LLMClient(provider=provider, model=model)
+                resp = test_client.complete(
+                    system="You are a helpful assistant.",
+                    user="Reply with exactly: OK",
+                    max_tokens=10,
+                )
+                st.success(f"✅ Connected! Model replied: {resp.strip()}")
+            except Exception as e:
+                st.error(f"❌ Connection failed: {e}")
 
     st.divider()
     st.subheader("Run Options")
@@ -114,8 +141,10 @@ with st.sidebar:
 2. Review the Review Queue tab
 3. Run **full extraction** on confirmed eligible papers
 
-**Best model for extraction:** `claude-opus-4-6`
-**Best model for classification:** `gpt-4o-mini`
+**Best Groq model for extraction:** `llama-3.3-70b-versatile`
+**Fastest Groq model:** `llama-3.1-8b-instant`
+
+Groq is **free** to start — get your key at console.groq.com
         """)
 
 
@@ -206,8 +235,10 @@ with tab_run:
         )
         selected_pdfs = [p for p in pdfs if p.name in selected_names]
 
-        if not api_key:
-            st.error("⛔ No API key set — add it in the sidebar.")
+        # Check the live env var, not just the local variable
+        live_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
+        if not live_key:
+            st.error("⛔ No API key set — paste it in the sidebar.")
         else:
             col1, col2 = st.columns([1, 3])
             run_btn = col1.button(
@@ -248,8 +279,13 @@ with tab_run:
                     status_text.text("✅ Pipeline complete!")
                     n_cls = len(results["classifications"])
                     n_ext = len(results["extractions"])
-                    st.success(f"Done! Classified {n_cls} paper(s), extracted {n_ext} study record(s).")
-                    st.balloons()
+                    if n_cls == 0:
+                        st.error("⚠️ 0 papers classified — LLM call failed. Check errors below.")
+                        errors = [e for e in results.get("log_entries", []) if e.level == "error"]
+                        for e in errors:
+                            st.error(f"**[{e.paper_id}]** {e.message}")
+                    else:
+                        st.success(f"Done! Classified {n_cls} paper(s), extracted {n_ext} study record(s).")
                 except Exception as exc:
                     st.session_state.running = False
                     st.error(f"Pipeline error: {exc}")

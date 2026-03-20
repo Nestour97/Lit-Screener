@@ -1,91 +1,90 @@
 """
-LLM client with provider abstraction (OpenAI default; Anthropic stub).
-All calls return raw text. Structured JSON parsing is done by callers.
+LLM client — OpenAI | Anthropic | Groq.
+API keys are read from os.environ at call time (not import time),
+so setting them in the Streamlit sidebar always takes effect.
 """
 
+import os
 import json
 import logging
 from typing import Optional
 
-from src.config import (
-    LLM_PROVIDER, OPENAI_API_KEY, ANTHROPIC_API_KEY,
-    OPENAI_MODEL, ANTHROPIC_MODEL, MAX_TOKENS, TEMPERATURE,
-    RETRY_MAX_ATTEMPTS, RETRY_BASE_DELAY
-)
 from src.utils.retry_utils import with_retry
 
 logger = logging.getLogger(__name__)
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+GROQ_JSON_CAPABLE = {
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+}
+
+
+def _cfg(key: str, default: str = "") -> str:
+    """Read config from env at call time — never cached at import time."""
+    return os.environ.get(key, default)
+
 
 class LLMClient:
-    """Provider-agnostic LLM wrapper."""
+    """Provider-agnostic LLM wrapper. Supports openai | anthropic | groq."""
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
-        self.provider = (provider or LLM_PROVIDER).lower()
-        if self.provider == "openai":
-            self.model = model or OPENAI_MODEL
-            self._client = self._init_openai()
-        elif self.provider == "anthropic":
-            self.model = model or ANTHROPIC_MODEL
-            self._client = self._init_anthropic()
-        else:
-            raise ValueError(f"Unknown LLM provider: {self.provider}")
+        self.provider = (provider or _cfg("LLM_PROVIDER", "groq")).lower()
+        self.model = model or self._default_model()
 
-    # ── Initialisation ────────────────────────────────────────────────────────
+    def _default_model(self) -> str:
+        defaults = {
+            "openai": "gpt-4o",
+            "anthropic": "claude-opus-4-6",
+            "groq": "llama-3.3-70b-versatile",
+        }
+        return _cfg(f"{self.provider.upper()}_MODEL", defaults.get(self.provider, ""))
 
-    def _init_openai(self):
-        try:
-            from openai import OpenAI
-            return OpenAI(api_key=OPENAI_API_KEY)
-        except ImportError:
-            raise ImportError("openai package not installed. Run: pip install openai")
+    # ── Public API ────────────────────────────────────────────────────────────
 
-    def _init_anthropic(self):
-        try:
-            import anthropic
-            return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        except ImportError:
-            raise ImportError("anthropic package not installed. Run: pip install anthropic")
-
-    # ── Public API ─────────────────────────────────────────────────────────────
-
-    def complete(self, system: str, user: str, max_tokens: int = MAX_TOKENS,
-                 temperature: float = TEMPERATURE) -> str:
-        """Send a chat completion and return the raw text response."""
+    def complete(self, system: str, user: str,
+                 max_tokens: int = 4096,
+                 temperature: float = 0.0) -> str:
         return self._complete_with_retry(system, user, max_tokens, temperature)
 
-    def complete_json(self, system: str, user: str, max_tokens: int = MAX_TOKENS) -> dict:
-        """Send a completion expecting JSON back. Strips markdown fences."""
+    def complete_json(self, system: str, user: str, max_tokens: int = 4096) -> dict:
         raw = self.complete(system, user, max_tokens)
         return _parse_json_safe(raw)
 
-    # ── Provider implementations ──────────────────────────────────────────────
+    # ── Retry wrapper ─────────────────────────────────────────────────────────
 
-    @with_retry(max_attempts=RETRY_MAX_ATTEMPTS, base_delay=RETRY_BASE_DELAY)
-    def _complete_with_retry(self, system: str, user: str,
-                             max_tokens: int, temperature: float) -> str:
-        if self.provider == "openai":
-            return self._openai_complete(system, user, max_tokens, temperature)
-        elif self.provider == "anthropic":
+    @with_retry(max_attempts=3, base_delay=2.0)
+    def _complete_with_retry(self, system, user, max_tokens, temperature) -> str:
+        if self.provider == "anthropic":
             return self._anthropic_complete(system, user, max_tokens, temperature)
+        elif self.provider in ("openai", "groq"):
+            return self._openai_compat_complete(system, user, max_tokens, temperature)
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
 
-    def _openai_complete(self, system: str, user: str,
-                         max_tokens: int, temperature: float) -> str:
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format={"type": "json_object"},
-        )
-        return resp.choices[0].message.content or ""
+    # ── Anthropic ─────────────────────────────────────────────────────────────
 
-    def _anthropic_complete(self, system: str, user: str,
-                            max_tokens: int, temperature: float) -> str:
-        resp = self._client.messages.create(
+    def _anthropic_complete(self, system, user, max_tokens, temperature) -> str:
+        try:
+            import anthropic
+        except ImportError:
+            raise ImportError("Run: pip install anthropic")
+
+        api_key = _cfg("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not set. "
+                "Add it in the Streamlit sidebar or in your .env / Streamlit secrets."
+            )
+
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -94,17 +93,49 @@ class LLMClient:
         )
         return resp.content[0].text if resp.content else ""
 
+    # ── OpenAI / Groq (same SDK) ──────────────────────────────────────────────
+
+    def _openai_compat_complete(self, system, user, max_tokens, temperature) -> str:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("Run: pip install openai")
+
+        if self.provider == "groq":
+            api_key = _cfg("GROQ_API_KEY")
+            if not api_key:
+                raise ValueError("GROQ_API_KEY is not set.")
+            client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
+            use_json = self.model in GROQ_JSON_CAPABLE
+        else:
+            api_key = _cfg("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY is not set.")
+            client = OpenAI(api_key=api_key)
+            use_json = True
+
+        kwargs = dict(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if use_json:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        resp = client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content or ""
+
 
 def _parse_json_safe(raw: str) -> dict:
-    """Strip markdown fences and parse JSON. Raises ValueError on failure."""
     text = raw.strip()
     if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first and last fence lines
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
         text = "\n".join(lines)
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        logger.error(f"[llm_client] JSON parse error: {exc}\nRaw: {raw[:300]}")
         raise ValueError(f"LLM returned invalid JSON: {exc}") from exc

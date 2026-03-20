@@ -90,7 +90,9 @@ def run_pipeline(
             if cls.needs_review:
                 ext_logger.flag(paper_id, "classification", f"Needs review: {cls.flag_reason}")
         except Exception as exc:
-            ext_logger.error(paper_id, "classification", str(exc))
+            err_msg = str(exc)
+            ext_logger.error(paper_id, "classification", err_msg)
+            _cb(progress_cb, paper_id, f"❌ CLASSIFICATION ERROR: {err_msg}", progress)
             record.status = "failed"
             records.append(record)
             continue
@@ -108,7 +110,9 @@ def run_pipeline(
                     if ex.needs_review:
                         ext_logger.flag(paper_id, "extraction", f"[{ex.paper_id}] {ex.flag_reason}")
             except Exception as exc:
-                ext_logger.error(paper_id, "extraction", str(exc))
+                err_msg = str(exc)
+                ext_logger.error(paper_id, "extraction", err_msg)
+                _cb(progress_cb, paper_id, f"❌ EXTRACTION ERROR: {err_msg}", progress)
                 record.status = "needs_review"
                 record.log_entries.append(LogEntry(
                     paper_id=paper_id, step="extraction", level="error",
